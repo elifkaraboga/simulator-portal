@@ -149,7 +149,7 @@ import pulp
 # Helper functions
 # -----------------------------
 def project_pilots(current, monthly_in, monthly_out, months):
-"""Basit projeksiyon: her ay sabit in/out varsayalım."""
+    """Basit projeksiyon: her ay sabit in/out varsayalım."""
 values = []
 total = current
 for _ in range(months):
@@ -161,7 +161,7 @@ return np.array(values)
 
 
 def compute_recurrent_demand(pilots, cycle_months=6):
-"""6 ayda 1 recurrent varsayımıyla, talep ≈ pilot_sayısı / 6."""
+    """6 ayda 1 recurrent varsayımıyla, talep ≈ pilot_sayısı / 6."""
 return pilots / cycle_months
 
 
@@ -174,10 +174,7 @@ return max(effective, 0)
 def optimize_for_sim_count(total_demand, sim_count,
 slots_per_day, days_per_month,
 utilization, other_trainings, c_out):
-"""
-Verilen simülatör sayısı için aylık talep ve kapasiteye bakarak
-outsourcing miktarını minimize eden basit bir MILP kurar.
-"""
+    """Verilen simülatör sayısı için aylık talep ve kapasiteye bakarak outsourcing miktarını minimize eden basit bir MILP kurar."""
 T = len(total_demand)
 capacity = compute_capacity(sim_count, slots_per_day, days_per_month, utilization, other_trainings)
 
@@ -230,9 +227,7 @@ st.set_page_config(page_title="Simulator Forecast Portal", layout="wide")
 
 st.title("✈️ Simulator Capacity & Forecast Portal")
 st.write(
-"Bu prototip, pilot sayıları ve simülatör kapasitesine göre önümüzdeki aylarda "
-"recurrent talebi ve kapasiteyi karşılaştırır, ayrıca farklı sim sayıları için "
-"MILP tabanlı bir outsourcing optimizasyonu çalıştırır."
+    "Bu prototip, pilot sayıları ve simülatör kapasitesine göre önümüzdeki aylarda recurrent talebi ve kapasiteyi karşılaştırır, ayrıca farklı sim sayıları için MILP tabanlı bir outsourcing optimizasyonu çalıştırır."
 )
 
 # --- Sidebar Inputs ---
@@ -389,3 +384,4 @@ f"(Total outsourcing cost = {int(best_row['Total outsourcing cost'])})."
 
 else:
 st.info("Soldaki parametreleri doldurup **Run Forecast & Optimization** butonuna basarak sonuçları görebilirsin.")
+
