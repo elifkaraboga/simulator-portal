@@ -1,96 +1,54 @@
 # app.py
+# app.py
 import streamlit as st
 import pandas as pd
-import numpy as np
 import pulp
 import gc
 
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
-
-# ------------------------------------------------------
-# GENEL AYARLAR (sadece 1 kere!)
-# ------------------------------------------------------
-st.set_page_config(
-    page_title="Simulator Capacity & Optimization Portal",
-    layout="wide",
-)
-
-# ------------------------------------------------------
-# 1) FORECAST PORTALI İÇİN HELPER FONKSİYONLAR
-# ------------------------------------------------------
-def project_pilots(current, monthly_in, monthly_out, months):
-    """Basit projeksiyon: her ay sabit in/out varsayalım."""
-    values = []
-    total = current
-    for _ in range(months):
-        total = total + monthly_in - monthly_out
-        if total < 0:
-            total = 0
-        values.append(total)
-    return np.array(values)
-
-
-def compute_recurrent_demand(pilots, cycle_months=6):
-    """6 ayda 1 recurrent varsayımıyla, talep ≈ pilot_sayısı / 6."""
-    return pilots / cycle_months
-
-
-def compute_capacity(sim_count, slots_per_day, days_per_month, utilization, other_trainings):
-    raw = sim_count * slots_per_day * days_per_month * utilization
-    effective = raw - other_trainings
-    return max(effective, 0)
-
-
-# ------------------------------------------------------
-# 2) OPTİMİZASYON MODELi İÇİN SABİTLER & HELPER
-# ------------------------------------------------------
+# -----------------------------
+# Basit sabitler
+# -----------------------------
 FLEETS = ["A330", "A350"]
 TRAINING_TYPES = ["OPC", "LPC", "OTHER"]
 
+# Sadece gösterim için ay isimleri (model için şart değil ama okunaklı)
 MONTHS = [
-    {"id": 1, "name": "Ocak",      "days": 31},
-    {"id": 2, "name": "Şubat",     "days": 28},
-    {"id": 3, "name": "Mart",      "days": 31},
-    {"id": 4, "name": "Nisan",     "days": 30},
-    {"id": 5, "name": "Mayıs",     "days": 31},
-    {"id": 6, "name": "Haziran",   "days": 30},
-    {"id": 7, "name": "Temmuz",    "days": 31},
-    {"id": 8, "name": "Ağustos",   "days": 31},
-    {"id": 9, "name": "Eylül",     "days": 30},
-    {"id": 10, "name": "Ekim",     "days": 31},
-    {"id": 11, "name": "Kasım",    "days": 30},
-    {"id": 12, "name": "Aralık",   "days": 31},
+    {"id": 1, "name": "Ocak"},
+    {"id": 2, "name": "Şubat"},
+    {"id": 3, "name": "Mart"},
+    {"id": 4, "name": "Nisan"},
+    {"id": 5, "name": "Mayıs"},
+    {"id": 6, "name": "Haziran"},
+    {"id": 7, "name": "Temmuz"},
+    {"id": 8, "name": "Ağustos"},
+    {"id": 9, "name": "Eylül"},
+    {"id": 10, "name": "Ekim"},
+    {"id": 11, "name": "Kasım"},
+    {"id": 12, "name": "Aralık"},
 ]
 
-DEFAULT_SIMS_PER_FLEET = {
-    "A330": 4,
-    "A350": 2,
-}
 
-SLOTS_PER_DAY = 5
-HOURS_PER_SLOT = 4  # şu an modelde kullanılmıyor, ileride lazım olabilir
-
-
+# -----------------------------
+# Optimizasyon fonksiyonu
+# -----------------------------
 def build_and_solve_model(
-    year: int,
     sims_per_fleet: dict,
+    slots_per_day: int,
+    days_per_month: int,
     capacity_factor: float,
     yearly_demand: dict,
 ):
     """
-    Hafif MIP modeli kurar ve çözer.
-    Decision variable:
-        x[f, t, m] = ay m'de, filo f ve eğitim tipi t için planlanan seans sayısı (integer)
-    Amaç:
-        Toplam planlanan seans sayısını maksimize etmek.
-    Kısıtlar:
-        1) Her filo+eğitim için yıllık toplam seans <= talep
-        2) Her filo+ay için sim kapasitesi sınırı
+    Çok hafif MIP modeli:
+      Değişken: x[f, t, m] = filo f, eğitim tipi t, ay m için seans sayısı (integer)
+      Amaç: toplam seansı maksimize et
+      Kısıtlar:
+        - Her filo+eğitim için yıllık toplam <= talep
+        - Her filo+ay için toplam seans <= aylık sim kapasitesi
     """
-    prob = pulp.LpProblem(f"Sim_Optimization_{year}", pulp.LpMaximize)
+    prob = pulp.LpProblem("Sim_Optimization", pulp.LpMaximize)
 
-    # Karar değişkenleri
+    # Değişkenler
     x = {}
     for f in FLEETS:
         for t in TRAINING_TYPES:
@@ -114,303 +72,177 @@ def build_and_solve_model(
                 f"Yearly_Demand_{f}_{t}",
             )
 
-    # Sim kapasite kısıtları (filo + ay)
+    # Aylık kapasite kısıtları (aynı gün sayısı varsayımıyla)
     for f in FLEETS:
         sims = sims_per_fleet.get(f, 0)
+        monthly_capacity = sims * slots_per_day * days_per_month * capacity_factor
         for m in MONTHS:
-            month_days = m["days"]
-            capacity_sessions = sims * SLOTS_PER_DAY * month_days * capacity_factor
             prob += (
                 pulp.lpSum(x[(f, t, m["id"])] for t in TRAINING_TYPES)
-                <= capacity_sessions,
-                f"Sim_Capacity_{f}_M{m['id']}",
+                <= monthly_capacity,
+                f"Capacity_{f}_M{m['id']}",
             )
 
-    # Modeli çöz
+    # Çöz
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
-
     status = pulp.LpStatus[prob.status]
-    objective_value = pulp.value(prob.objective)
+    objective_value = int(pulp.value(prob.objective) or 0)
 
-    # Sonuçlar – session DF
+    # Sonuçları küçük DataFrame'lere dök
     rows = []
     for f in FLEETS:
         for t in TRAINING_TYPES:
             for m in MONTHS:
                 key = (f, t, m["id"])
-                value = x[key].varValue if x[key].varValue is not None else 0
-                rows.append({
-                    "Filo": f,
-                    "Eğitim Tipi": t,
-                    "Ay": m["id"],
-                    "Ay Adı": m["name"],
-                    "Planlanan Seans": int(round(value)),
-                })
+                val = x[key].varValue
+                if val is None:
+                    val = 0
+                rows.append(
+                    {
+                        "Filo": f,
+                        "Eğitim Tipi": t,
+                        "Ay": m["id"],
+                        "Ay Adı": m["name"],
+                        "Planlanan Seans": int(round(val)),
+                    }
+                )
+
     sessions_df = pd.DataFrame(rows)
 
-    # Filo + ay bazlı kapasite & doluluk
-    util_rows = []
-    for f in FLEETS:
-        sims = sims_per_fleet.get(f, 0)
-        for m in MONTHS:
-            month_days = m["days"]
-            capacity_sessions = sims * SLOTS_PER_DAY * month_days * capacity_factor
-            planned_sessions = sessions_df[
-                (sessions_df["Filo"] == f) & (sessions_df["Ay"] == m["id"])
-            ]["Planlanan Seans"].sum()
-            utilization = 0.0
-            if capacity_sessions > 0:
-                utilization = planned_sessions / capacity_sessions * 100
-
-            util_rows.append({
-                "Filo": f,
-                "Ay": m["id"],
-                "Ay Adı": m["name"],
-                "Kapasite (Seans)": capacity_sessions,
-                "Planlanan Seans": planned_sessions,
-                "Doluluk %": round(utilization, 1),
-            })
-    utilization_df = pd.DataFrame(util_rows)
-
-    # Talep karşılama özeti
-    demand_rows = []
+    # Talep karşılama özeti (çok küçük tablo)
+    summary_rows = []
     for f in FLEETS:
         for t in TRAINING_TYPES:
             demand_ft = yearly_demand.get((f, t), 0)
             planned_ft = sessions_df[
-                (sessions_df["Filo"] == f) & (sessions_df["Eğitim Tipi"] == t)
+                (sessions_df["Filo"] == f)
+                & (sessions_df["Eğitim Tipi"] == t)
             ]["Planlanan Seans"].sum()
-            unmet = demand_ft - planned_ft
-            demand_rows.append({
-                "Filo": f,
-                "Eğitim Tipi": t,
-                "Yıllık Talep": demand_ft,
-                "Planlanan": planned_ft,
-                "Karşılanmayan Talep": max(0, unmet),
-                "Karşılama Oranı %": round((planned_ft / demand_ft * 100) if demand_ft > 0 else 0, 1),
-            })
-    demand_df = pd.DataFrame(demand_rows)
+            unmet = max(0, demand_ft - planned_ft)
+            ratio = 0.0
+            if demand_ft > 0:
+                ratio = planned_ft / demand_ft * 100.0
 
-    # Bellek temizliği
+            summary_rows.append(
+                {
+                    "Filo": f,
+                    "Eğitim Tipi": t,
+                    "Yıllık Talep": demand_ft,
+                    "Planlanan": int(planned_ft),
+                    "Karşılanmayan Talep": int(unmet),
+                    "Karşılama Oranı %": round(ratio, 1),
+                }
+            )
+
+    summary_df = pd.DataFrame(summary_rows)
+
+    # Temizlik (RAM için)
     del prob
     del x
     gc.collect()
 
-    return status, objective_value, sessions_df, utilization_df, demand_df
+    return status, objective_value, sessions_df, summary_df
 
 
-# ------------------------------------------------------
-# 3) ARAYÜZ
-# ------------------------------------------------------
-st.title("✈️ Simulator Capacity & Optimization Portal")
+# -----------------------------
+# Streamlit arayüzü (minimal)
+# -----------------------------
+st.set_page_config(page_title="Sim Optimizer (Light)", layout="wide")
 
-tab_forecast, tab_opt = st.tabs(["📈 Forecast", "🧮 Optimization"])
+st.title("✈️ Simulator Optimization (Light Version)")
+st.write(
+    "Bu sayfa, filo ve eğitim tiplerine göre **çok hafif** bir simülatör "
+    "optimizasyon modeli çalıştırır. Amaç: yıllık talebi ve aylık kapasiteyi "
+    "dikkate alarak maksimum seans sayısını planlamak."
+)
 
-# ----------------- TAB 1: FORECAST --------------------
-with tab_forecast:
-    st.subheader("Simulator Capacity & Forecast (MVP)")
+st.sidebar.header("Model Parametreleri")
 
-    st.write(
-        "Pilot sayıları ve sim kapasitesine göre önümüzdeki aylarda "
-        "recurrent talebi ve kapasiteyi karşılaştıran basit forecast."
+# Sim kapasite parametreleri
+st.sidebar.subheader("Sim Kapasitesi")
+sims_per_fleet = {}
+for f in FLEETS:
+    sims_per_fleet[f] = st.sidebar.number_input(
+        f"{f} sim sayısı",
+        min_value=0,
+        max_value=20,
+        value=4 if f == "A330" else 2,
+        step=1,
+        key=f"sim_{f}",
     )
 
-    st.sidebar.header("Forecast Parameters")
+slots_per_day = st.sidebar.number_input(
+    "Günlük slot sayısı (sim başına)",
+    min_value=1,
+    max_value=10,
+    value=5,
+    step=1,
+)
 
-    horizon_months = st.sidebar.slider("Forecast horizon (months)", 6, 36, 12)
+days_per_month = st.sidebar.number_input(
+    "Ay başına gün (ortalama)",
+    min_value=1,
+    max_value=31,
+    value=30,
+    step=1,
+)
 
-    # Date range
-    start_date = st.sidebar.date_input("Start month", datetime.today())
-    months = [
-        (start_date + relativedelta(months=i)).strftime("%Y-%m")
-        for i in range(horizon_months)
-    ]
+capacity_factor = st.sidebar.slider(
+    "Kapasite kullanım oranı",
+    min_value=0.1,
+    max_value=1.0,
+    value=0.8,
+    step=0.05,
+)
 
-    st.sidebar.subheader("Pilot Counts (current)")
-    curr_a330 = st.sidebar.number_input("Current A330 pilots", min_value=0, value=400, step=10)
-    curr_a350 = st.sidebar.number_input("Current A350 pilots", min_value=0, value=300, step=10)
-    curr_dual = st.sidebar.number_input("Current DUAL (A330+A350) pilots", min_value=0, value=200, step=10)
+# Talep parametreleri
+st.sidebar.subheader("Yıllık Talep (Seans)")
+yearly_demand = {}
+for f in FLEETS:
+    st.sidebar.markdown(f"**{f}**")
+    cols = st.sidebar.columns(len(TRAINING_TYPES))
+    for i, t in enumerate(TRAINING_TYPES):
+        with cols[i]:
+            default_val = 800 if t in ["OPC", "LPC"] else 400
+            val = st.number_input(
+                t,
+                min_value=0,
+                max_value=10000,
+                value=default_val,
+                step=10,
+                key=f"demand_{f}_{t}",
+            )
+            yearly_demand[(f, t)] = val
 
-    st.sidebar.subheader("Monthly In / Out (average)")
-    in_a330 = st.sidebar.number_input("Monthly A330 inflow", min_value=0, value=5)
-    out_a330 = st.sidebar.number_input("Monthly A330 outflow", min_value=0, value=2)
+run_button = st.sidebar.button("Optimizasyonu Çalıştır")
 
-    in_a350 = st.sidebar.number_input("Monthly A350 inflow", min_value=0, value=8)
-    out_a350 = st.sidebar.number_input("Monthly A350 outflow", min_value=0, value=3)
-
-    in_dual = st.sidebar.number_input("Monthly DUAL inflow", min_value=0, value=3)
-    out_dual = st.sidebar.number_input("Monthly DUAL outflow", min_value=0, value=1)
-
-    st.sidebar.subheader("Simulator Capacity (Total)")
-    sim_count = st.sidebar.number_input("Total simulators (all fleets)", min_value=1, value=6)
-    slots_per_day = st.sidebar.number_input("Slots per simulator per day", min_value=1, value=5)
-    days_per_month = st.sidebar.number_input("Days per month (average)", min_value=1, max_value=31, value=30)
-    utilization = st.sidebar.slider("Target utilization", 0.5, 1.0, 0.8)
-    other_trainings = st.sidebar.number_input("Other training load (sessions/month)", min_value=0, value=50)
-
-    run_button_forecast = st.sidebar.button("Run Forecast")
-
-    if run_button_forecast:
-        # Pilot projections
-        a330_pilots = project_pilots(curr_a330, in_a330, out_a330, horizon_months)
-        a350_pilots = project_pilots(curr_a350, in_a350, out_a350, horizon_months)
-        dual_pilots = project_pilots(curr_dual, in_dual, out_dual, horizon_months)
-
-        a330_effective = a330_pilots + 0.5 * dual_pilots
-        a350_effective = a350_pilots + 0.5 * dual_pilots
-
-        # Demand (recurrent)
-        demand_a330 = compute_recurrent_demand(a330_effective)
-        demand_a350 = compute_recurrent_demand(a350_effective)
-        total_demand = demand_a330 + demand_a350
-
-        # Capacity (constant per month in this MVP)
-        monthly_capacity = compute_capacity(
-            sim_count=sim_count,
+if run_button:
+    with st.spinner("Model çözülüyor..."):
+        status, objective_value, sessions_df, summary_df = build_and_solve_model(
+            sims_per_fleet=sims_per_fleet,
             slots_per_day=slots_per_day,
             days_per_month=days_per_month,
-            utilization=utilization,
-            other_trainings=other_trainings,
-        )
-        capacity_series = np.array([monthly_capacity] * horizon_months)
-
-        df_forecast = pd.DataFrame({
-            "Month": months,
-            "A330 pilots (eff)": a330_effective.round(1),
-            "A350 pilots (eff)": a350_effective.round(1),
-            "Demand A330 (recurrent)": demand_a330.round(1),
-            "Demand A350 (recurrent)": demand_a350.round(1),
-            "Total Demand": total_demand.round(1),
-            "Capacity": capacity_series.round(1),
-        })
-
-        df_forecast["Utilization %"] = (df_forecast["Total Demand"] / df_forecast["Capacity"] * 100).round(1)
-        df_forecast["Deficit"] = (df_forecast["Total Demand"] - df_forecast["Capacity"]).round(1)
-
-        st.subheader("Forecast Summary Table")
-        st.dataframe(df_forecast, use_container_width=True)
-
-        st.subheader("Total Demand vs Capacity")
-        chart_df = df_forecast[["Month", "Total Demand", "Capacity"]].set_index("Month")
-        st.line_chart(chart_df)
-
-        breach_rows = df_forecast[df_forecast["Deficit"] > 0]
-        if not breach_rows.empty:
-            first_breach = breach_rows.iloc[0]
-            st.error(
-                f"⚠️ Capacity breach starts at **{first_breach['Month']}** "
-                f"(Demand={first_breach['Total Demand']}, Capacity={first_breach['Capacity']})."
-            )
-        else:
-            st.success("✅ No capacity breach within the selected horizon.")
-    else:
-        st.info("Soldaki parametreleri doldurup **Run Forecast** butonuna basarak sonuçları görebilirsin.")
-
-
-# ---------------- TAB 2: OPTİMİZASYON -----------------
-with tab_opt:
-    st.subheader("Simulator Optimization (Hafif MIP)")
-
-    st.write(
-        "Bu bölümde filo × eğitim tipi × ay bazında, sim kapasitesine göre "
-        "yıllık talebin ne kadarını planlayabildiğimizi optimize ediyoruz."
-    )
-
-    st.sidebar.header("Optimization Parameters")
-
-    year = st.sidebar.number_input("Planlama Yılı", min_value=2024, max_value=2100, value=2025, step=1)
-
-    capacity_factor = st.sidebar.slider(
-        "Sim Kapasite Kullanım Oranı",
-        min_value=0.1,
-        max_value=1.0,
-        value=0.8,
-        step=0.05,
-        help="Örneğin 0.8 = yıllık/aylık sim kapasitesinin %80'i kullanılabilir kabul edilir.",
-    )
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Simülatör Sayıları (Filo Bazında)")
-    sims_per_fleet = {}
-    for f in FLEETS:
-        sims_per_fleet[f] = st.sidebar.number_input(
-            f"{f} Sim Sayısı",
-            min_value=0,
-            max_value=20,
-            value=DEFAULT_SIMS_PER_FLEET.get(f, 0),
-            step=1,
-            key=f"sim_{f}",
+            capacity_factor=capacity_factor,
+            yearly_demand=yearly_demand,
         )
 
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Yıllık Talep (Seans Sayısı)")
-    yearly_demand = {}
-    for f in FLEETS:
-        st.sidebar.markdown(f"**{f}**")
-        cols = st.sidebar.columns(len(TRAINING_TYPES))
-        for i, t in enumerate(TRAINING_TYPES):
-            with cols[i]:
-                default_val = 800 if t in ["OPC", "LPC"] else 400
-                val = st.number_input(
-                    f"{t}",
-                    min_value=0,
-                    max_value=10000,
-                    value=default_val,
-                    step=10,
-                    key=f"demand_{f}_{t}",
-                    help=f"{f} filosu için yıllık {t} seans talebi.",
-                )
-                yearly_demand[(f, t)] = val
+    st.success(f"Çözüm durumu: **{status}**")
+    st.markdown(f"**Toplam planlanan seans:** `{objective_value}`")
 
-    run_button_opt = st.sidebar.button("Run Optimization")
+    col1, col2 = st.columns(2)
 
-    if run_button_opt:
-        with st.spinner("Model çözülüyor, lütfen bekleyin..."):
-            status, objective_value, sessions_df, utilization_df, demand_df = build_and_solve_model(
-                year=year,
-                sims_per_fleet=sims_per_fleet,
-                capacity_factor=capacity_factor,
-                yearly_demand=yearly_demand,
-            )
+    with col1:
+        st.subheader("Aylık Planlanan Seanslar")
+        st.dataframe(
+            sessions_df.sort_values(["Filo", "Ay", "Eğitim Tipi"]).reset_index(drop=True),
+            use_container_width=True,
+        )
 
-        st.success(f"Model çözümü tamamlandı. Çözüm durumu: **{status}**")
-        st.markdown(f"**Toplam Planlanan Seans (Amaç Fonksiyonu):** `{int(objective_value)}`")
-
-        tab1, tab2, tab3 = st.tabs(["📅 Aylık Seans Dağılımı", "📊 Sim Doluluk Oranları", "📈 Talep Karşılama"])
-
-        with tab1:
-            st.markdown("#### Aylık Seans Dağılımı (Filo × Eğitim Tipi × Ay)")
-            st.dataframe(
-                sessions_df.sort_values(["Filo", "Ay", "Eğitim Tipi"]).reset_index(drop=True),
-                use_container_width=True,
-            )
-
-        with tab2:
-            st.markdown("#### Sim Kapasite ve Doluluk Oranları")
-            st.dataframe(
-                utilization_df.sort_values(["Filo", "Ay"]).reset_index(drop=True),
-                use_container_width=True,
-            )
-            st.markdown("##### Doluluk Oranı Grafiği (Filo Bazında)")
-            for f in FLEETS:
-                st.markdown(f"**{f}**")
-                df_plot = utilization_df[utilization_df["Filo"] == f].set_index("Ay Adı")
-                st.bar_chart(df_plot["Doluluk %"])
-
-        with tab3:
-            st.markdown("#### Talep Karşılama Özeti")
-            st.dataframe(
-                demand_df.sort_values(["Filo", "Eğitim Tipi"]).reset_index(drop=True),
-                use_container_width=True,
-            )
-            st.markdown(
-                """
-- **Yıllık Talep**: Filo + eğitim tipi için girilen talep  
-- **Planlanan**: Modelin planladığı seans sayısı  
-- **Karşılanmayan Talep**: Talep eksi planlanan  
-- **Karşılama Oranı**: Planlanan / Talep
-                """
-            )
-    else:
-        st.info("Soldaki parametreleri ayarlayıp **Run Optimization** butonuna basarak modeli çalıştırabilirsin.")
-
+    with col2:
+        st.subheader("Talep Karşılama Özeti")
+        st.dataframe(
+            summary_df.sort_values(["Filo", "Eğitim Tipi"]).reset_index(drop=True),
+            use_container_width=True,
+        )
+else:
+    st.info("Soldaki parametreleri ayarlayıp **“Optimizasyonu Çalıştır”** butonuna bas.")
