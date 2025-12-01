@@ -11,7 +11,7 @@ import gc
 FLEETS = ["A330", "A350"]
 TRAINING_TYPES = ["OPC", "LPC", "OTHER"]
 
-# Sadece gösterim için ay isimleri (model için şart değil ama okunaklı)
+# Sadece gösterim için ay isimleri
 MONTHS = [
     {"id": 1, "name": "Ocak"},
     {"id": 2, "name": "Şubat"},
@@ -39,7 +39,7 @@ def build_and_solve_model(
     yearly_demand: dict,
 ):
     """
-    Çok hafif MIP modeli:
+    Çok hafif MILP modeli:
       Değişken: x[f, t, m] = filo f, eğitim tipi t, ay m için seans sayısı (integer)
       Amaç: toplam seansı maksimize et
       Kısıtlar:
@@ -149,9 +149,9 @@ def build_and_solve_model(
 # -----------------------------
 st.set_page_config(page_title="Sim Optimizer (Light)", layout="wide")
 
-st.title("✈️ Simulator Optimization (Light Version)")
+st.title("✈️ Simulator Optimization")
 st.write(
-    "Bu sayfa, filo ve eğitim tiplerine göre **çok hafif** bir simülatör "
+    "Bu sayfa, filo ve eğitim tiplerine göre bir simülatör "
     "optimizasyon modeli çalıştırır. Amaç: yıllık talebi ve aylık kapasiteyi "
     "dikkate alarak maksimum seans sayısını planlamak."
 )
@@ -246,3 +246,4 @@ if run_button:
         )
 else:
     st.info("Soldaki parametreleri ayarlayıp **“Optimizasyonu Çalıştır”** butonuna bas.")
+
